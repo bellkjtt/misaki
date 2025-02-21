@@ -543,6 +543,8 @@ class G2P:
         for k, v in features.items():
             assert isinstance(v, str) or isinstance(v, int) or v in (0.5, -0.5), (k, v)
             for i, j in enumerate(np.where(align.y2x.data == k)[0]):
+                if j >= len(mutable_tokens):
+                    continue
                 if not isinstance(v, str):
                     mutable_tokens[j].stress = v
                 elif v.startswith('/'):
@@ -690,5 +692,5 @@ class G2P:
             else:
                 G2P.resolve_tokens(w)
         tokens = [MToken.merge_tokens(t, unk=self.unk) if isinstance(t, list) else t for t in tokens]
-        result = ''.join(t.phonemes + t.whitespace for t in tokens)
+        result = ''.join((self.unk if t.phonemes is None else t.phonemes) + t.whitespace for t in tokens)
         return result, tokens
