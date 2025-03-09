@@ -1,7 +1,8 @@
 from . import data
+from .token import MToken
 from dataclasses import dataclass, replace
 from num2words import num2words
-from typing import List, Optional, Union
+from typing import List, Optional, Tuple, Union
 import importlib.resources
 import json
 import numpy as np
@@ -10,71 +11,8 @@ import spacy
 import unicodedata
 
 DIPHTHONGS = frozenset('AIOQWYʤʧ')
-
-@dataclass
-class MToken:
-    text: str
-    tag: str
-    whitespace: str
-    is_head: bool = True
-    alias: Optional[str] = None
-    phonemes: Optional[str] = None
-    stress: Union[None, int, float] = None
-    currency: Optional[str] = None
-    num_flags: str = ''
-    prespace: bool = False
-    rating: Optional[int] = None
-    start_ts: Optional[float] = None
-    end_ts: Optional[float] = None
-
-    @staticmethod
-    def merge_tokens(tokens: List['MToken'], unk: Optional[str] = None) -> 'MToken':
-        stress = {t.stress for t in tokens if t.stress is not None}
-        currency = {t.currency for t in tokens if t.currency is not None}
-        rating = {t.rating for t in tokens}
-        if unk is None:
-            phonemes = None
-        else:
-            phonemes = ''
-            for t in tokens:
-                if t.prespace and phonemes and not phonemes[-1].isspace() and t.phonemes:
-                    phonemes += ' '
-                phonemes += unk if t.phonemes is None else t.phonemes
-        return MToken(
-            text=''.join(t.text + t.whitespace for t in tokens[:-1]) + tokens[-1].text,
-            tag=max(tokens, key=lambda t: sum(1 if c == c.lower() else 2 for c in t.text)).tag,
-            whitespace=tokens[-1].whitespace,
-            is_head=tokens[0].is_head,
-            alias=None,
-            phonemes=phonemes,
-            stress=list(stress)[0] if len(stress) == 1 else None,
-            currency=max(currency) if currency else None,
-            num_flags=''.join(sorted({c for t in tokens for c in t.num_flags})),
-            prespace=tokens[0].prespace,
-            rating=None if None in rating else min(rating),
-            start_ts=tokens[0].start_ts,
-            end_ts=tokens[-1].end_ts
-        )
-
-    def is_to(self):
-        return self.text in ('to', 'To') or (self.text == 'TO' and self.tag in ('TO', 'IN'))
-
-    def stress_weight(self):
-        return sum(2 if c in DIPHTHONGS else 1 for c in self.phonemes) if self.phonemes else 0
-
-    def debug_all(self):
-        ps = {None: '❓', '': '🥷'}.get(self.phonemes, self.phonemes)
-        if self.rating is None:
-            rt = '❓(UNK)'
-        elif self.rating >= 5:
-            rt = '💎(5/5)'
-        elif self.rating == 4:
-            rt = '🏆(4/5)'
-        elif self.rating == 3:
-            rt = '🥈(3/5)'
-        else:
-            rt = '🥉(2/5)'
-        return [self.text, self.tag, bool(self.whitespace), ps, rt]
+def stress_weight(ps):
+    return sum(2 if c in DIPHTHONGS else 1 for c in ps) if ps else 0
 
 @dataclass
 class TokenContext:
@@ -148,6 +86,9 @@ def apply_stress(ps, stress):
             return ps
         return restress(PRIMARY_STRESS + ps)
     return ps
+
+def is_digit(text):
+    return bool(re.match(r'^[0-9]+$', text))
 
 class Lexicon:
     @staticmethod
@@ -430,7 +371,7 @@ class Lexicon:
                 extend_num(num, first=i==0)
                 result.append(self.stem_s(unit+'s', None, None, None) if abs(num) != 1 and unit != 'pence' else self.lookup(unit, None, None, None))
         else:
-            if word.isdigit():
+            if is_digit(word):
                 word = num2words(int(word), to='ordinal' if suffix in ORDINALS else ('year' if not result and len(word) == 4 else 'cardinal'))
             elif '.' not in word:
                 word = num2words(int(word.replace(',', '')), to='ordinal' if suffix in ORDINALS else 'cardinal')
@@ -461,19 +402,27 @@ class Lexicon:
         return f'{ps} {currency}' if currency else ps
 
     @staticmethod
+    def numeric_if_needed(c):
+        if not c.isnumeric():
+            return c
+        n = unicodedata.numeric(c)
+        return str(int(n)) if n == int(n) else c
+
+    @staticmethod
     def is_number(word, is_head):
-        if all(not c.isdigit() for c in word):
+        if all(not is_digit(c) for c in word):
             return False
         suffixes = ('ing', "'d", 'ed', "'s", *ORDINALS, 's')
         for s in suffixes:
             if word.endswith(s):
                 word = word[:-len(s)]
                 break
-        return all(c.isdigit() or c in ',.' or (is_head and i == 0 and c == '-') for i, c in enumerate(word))
+        return all(is_digit(c) or c in ',.' or (is_head and i == 0 and c == '-') for i, c in enumerate(word))
 
     def __call__(self, t, ctx):
         word = (t.text if t.alias is None else t.alias).replace(chr(8216), "'").replace(chr(8217), "'")
         word = unicodedata.normalize('NFKC', word)
+        word = ''.join(Lexicon.numeric_if_needed(c) for c in word)
         stress = None if word == word.lower() else self.cap_stresses[int(word == word.upper())]
         ps, rating = self.get_word(word, t.tag, stress, ctx)
         if ps is not None:
@@ -495,7 +444,8 @@ class G2P:
         name = f"en_core_web_{'trf' if trf else 'sm'}"
         if not spacy.util.is_package(name):
             spacy.cli.download(name)
-        self.nlp = spacy.load(name)
+        components = ['transformer' if trf else 'tok2vec', 'tagger']
+        self.nlp = spacy.load(name, enable=components)
         self.lexicon = Lexicon(british)
         self.fallback = fallback if fallback else None
         self.unk = unk
@@ -511,7 +461,7 @@ class G2P:
             result += text[last_end:m.start()]
             tokens.extend(text[last_end:m.start()].split())
             f = m.group(2)
-            if f[1 if f[:1] in ('-', '+') else 0:].isdigit():
+            if is_digit(f[1 if f[:1] in ('-', '+') else 0:]):
                 f = int(f)
             elif f in ('0.5', '+0.5'):
                 f = 0.5
@@ -614,7 +564,7 @@ class G2P:
     @staticmethod
     def resolve_tokens(tokens):
         text = ''.join(t.text + t.whitespace for t in tokens[:-1]) + tokens[-1].text
-        prespace = ' ' in text or '/' in text or len({0 if c.isalpha() else (1 if c.isdigit() else 2) for c in text if c not in SUBTOKEN_JUNKS}) > 1
+        prespace = ' ' in text or '/' in text or len({0 if c.isalpha() else (1 if is_digit(c) else 2) for c in text if c not in SUBTOKEN_JUNKS}) > 1
         for i, t in enumerate(tokens):
             if t.phonemes is None:
                 if i == len(tokens) - 1 and t.text in NON_QUOTE_PUNCTS:
@@ -627,7 +577,7 @@ class G2P:
                 t.prespace = prespace
         if prespace:
             return
-        indices = [(PRIMARY_STRESS in t.phonemes, t.stress_weight(), i) for i, t in enumerate(tokens) if t.phonemes]
+        indices = [(PRIMARY_STRESS in t.phonemes, stress_weight(t.phonemes), i) for i, t in enumerate(tokens) if t.phonemes]
         if len(indices) == 2 and len(tokens[indices[0][2]].text) == 1:
             i = indices[1][2]
             tokens[i].phonemes = apply_stress(tokens[i].phonemes, -0.5)
@@ -638,7 +588,7 @@ class G2P:
         for _, _, i in indices:
             tokens[i].phonemes = apply_stress(tokens[i].phonemes, -0.5)
 
-    def __call__(self, text: str, preprocess=True):
+    def __call__(self, text: str, preprocess=True) -> Tuple[str, List[MToken]]:
         preprocess = G2P.preprocess if preprocess == True else preprocess
         text, tokens, features = preprocess(text) if preprocess else (text, [], {})
         tokens = self.tokenize(text, tokens, features)

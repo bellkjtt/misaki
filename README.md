@@ -6,7 +6,7 @@ Hosted demo: https://hf.co/spaces/hexgrad/Misaki-G2P
 ### English Usage
 You can run this in one cell on [Google Colab](https://colab.research.google.com/):
 ```py
-!pip install -q misaki[en]
+!pip install -q "misaki[en]"
 
 from misaki import en
 
@@ -24,7 +24,7 @@ To fallback to espeak:
 # Installing espeak varies across platforms, this silent install works on Colab:
 !apt-get -qq -y install espeak-ng > /dev/null 2>&1
 
-!pip install -q misaki[en] phonemizer-fork
+!pip install -q "misaki[en]" phonemizer-fork
 
 from misaki import en, espeak
 
@@ -58,10 +58,11 @@ print(phonemes) # nˈW Wɾɑfdˈɪkʃənˌɛɹi wˈɜɹdz ɑɹ hˈændəld bI ˈ
 - https://github.com/studio-ousia/mojimoji
 
 ### Korean
+- https://github.com/5Hyeons/StyleTTS2/tree/vocos/g2pK/g2pkc
 - https://github.com/tenebo/g2pk2
-- https://github.com/stannam/hangul_to_ipa
 
 ### Chinese
+- https://github.com/PaddlePaddle/PaddleSpeech/tree/develop/paddlespeech/t2s/frontend
 - https://github.com/fxsjy/jieba
 - https://github.com/mozillazg/python-pinyin
 - https://github.com/stefantaubert/pinyin-to-ipa
